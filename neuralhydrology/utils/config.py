@@ -870,6 +870,14 @@ class Config(object):
         """
         return self._cfg.get("verbose", 1)
 
+    @property 
+    def forecast_offset(self) -> int: 
+        return self._cfg.get("forecast_offset", 0)
+    
+    @property
+    def time_series_data_sub_dir(self) -> str:
+        return self._cfg.get("time_series_data_sub_dir", "")
+
     def _get_embedding_spec(self, embedding_spec: dict) -> dict:
         if isinstance(embedding_spec, bool) and embedding_spec:  #
             msg = [

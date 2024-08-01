@@ -1,31 +1,31 @@
 import logging
 import pickle
-import re
+# import re
 import sys
 import warnings
-from collections import defaultdict
+# from collections import defaultdict
 from typing import List, Dict, Union
 from functools import reduce
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from pandas.tseries import frequencies
+# from pandas.tseries import frequencies
 from pandas.tseries.frequencies import to_offset
 import torch
 import xarray
 from numba import NumbaPendingDeprecationWarning
 from numba import njit, prange
-from ruamel.yaml import YAML
-from torch.utils.data import Dataset
+# from ruamel.yaml import YAML
+# from torch.utils.data import Dataset
 from tqdm import tqdm
 
-from neuralhydrology.datasetzoo.basedataset import BaseDataset
+# from neuralhydrology.datasetzoo.basedataset import BaseDataset
 from neuralhydrology.datasetzoo.genericdataset import GenericDataset
 from neuralhydrology.datautils import utils
 from neuralhydrology.utils.config import Config
 from neuralhydrology.utils.errors import NoTrainDataError, NoEvaluationDataError
-from neuralhydrology.utils import samplingutils
+# from neuralhydrology.utils import samplingutils
 
 
 LOGGER = logging.getLogger(__name__)
@@ -79,6 +79,7 @@ class ForecastDataset(GenericDataset):
                  additional_features: List[Dict[str, pd.DataFrame]] = [],
                  id_to_int: Dict[str, int] = {},
                  scaler: Dict[str, Union[pd.Series, xarray.DataArray]] = {}):
+    
         super(GenericDataset, self).__init__(cfg=cfg,
                                              is_train=is_train,
                                              period=period,
@@ -87,13 +88,10 @@ class ForecastDataset(GenericDataset):
                                              id_to_int=id_to_int,
                                              scaler=scaler)
 
-    def __len__(self):
-        return self.num_samples
-
     def _load_basin_data(self, basin: str, columns: list) -> pd.DataFrame:
         """Load input and output data. """
         # modified so that we can specify the columns to load - this allows us to select hindcast/forecast variables separately. 
-        df = load_timeseries(data_dir=self.cfg.data_dir, basin=basin, columns=columns)
+        df = load_timeseries(data_dir=self.cfg.data_dir, time_series_data_sub_dir=self.cfg.time_series_data_sub_dir, basin=basin, columns=columns)
         return df
 
     def _initialize_frequency_configuration(self):
@@ -102,6 +100,7 @@ class ForecastDataset(GenericDataset):
         self.seq_len = self.cfg.seq_length
         self._forecast_seq_len = self.cfg.forecast_seq_length
         self._predict_last_n = self.cfg.predict_last_n
+        self._forecast_offset = self.cfg.forecast_offset
 
         # NOTE this dataset does not currently support multiple timestep frequencies. Instead 
         # we populate use_frequencies with the native frequency of the input data. 
@@ -117,49 +116,14 @@ class ForecastDataset(GenericDataset):
             self._forecast_seq_len = [self._forecast_seq_len]
             self._predict_last_n = [self._predict_last_n]
 
-    def _load_data(self):
-        # load attributes first to sanity-check those features before doing the compute expensive time series loading
-        self._load_combined_attributes()
-
-        # Load an xarray dataset with the required input data
-        xr = self._load_or_create_xarray_dataset()
-
-        # FIXME this works at the moment but we will need to amend the methods to properly handle forecasts 
-        if self.cfg.loss.lower() in ['nse', 'weightednse']:
-            # get the std of the discharge for each basin, which is needed for the (weighted) NSE loss.
-            self._calculate_per_basin_std(xr)
-
-        if self._compute_scaler:
-            # get feature-wise center and scale values for the feature normalization
-            self._setup_normalization(xr)
-
-        # performs normalization
-        xr = (xr - self.scaler["xarray_feature_center"]) / self.scaler["xarray_feature_scale"]
-
-        # Create a lookup table containing the last value in the sequence 
-        self._create_lookup_table(xr)
-
     def _load_or_create_xarray_dataset(self) -> xarray.Dataset:
         # if no netCDF file is passed, data set is created from raw basin files
         if (self.cfg.train_data_file is None) or (not self.is_train):
             data_list = []
-
-            # # list of columns to keep, everything else will be removed to reduce memory footprint
-            # keep_cols = self.cfg.target_variables #+ self.cfg.evolving_attributes + self.cfg.mass_inputs + self.cfg.autoregressive_inputs
-            # if isinstance(self.cfg.dynamic_inputs, list):
-            #     keep_cols += self.cfg.dynamic_inputs
-            # else:
-            #     # keep all frequencies' dynamic inputs
-            #     keep_cols += [i for inputs in self.cfg.dynamic_inputs.values() for i in inputs]
-
+            
+            # not supported: self.cfg.evolving_attributes, self.cfg.mass_inputs, self.cfg.autoregressive_inputs
             hcst_keep_cols = self.cfg.target_variables + self.cfg.hindcast_inputs
             fcst_keep_cols = self.cfg.forecast_inputs 
-
-            # Not currently supported
-            # # Keep the dynamic_conceptual_inputs
-            # keep_cols += self.cfg.dynamic_conceptual_inputs
-            # make sure that even inputs that are used in multiple frequencies occur only once in the df
-            # keep_cols = list(sorted(set(keep_cols)))
 
             if not self._disable_pbar:
                 LOGGER.info("Loading basin data into xarray data set.")
@@ -167,34 +131,29 @@ class ForecastDataset(GenericDataset):
 
                 df_hcst = self._load_basin_data(basin, hcst_keep_cols)
                 df_fcst = self._load_basin_data(basin, fcst_keep_cols) 
+
                 # Make sure the multiindex is ordered correctly
                 df_fcst.reset_index(inplace=True)
                 df_fcst.set_index(['date', 'lead_time'], inplace=True)
                 lead_times = df_fcst.index.unique(level='lead_time')
-                # if len(lead_times) != self.forecast_seq_len:
-                #     raise ValueError('')
 
-                # TODO add some of these features back in 
-                # # add columns from dataframes passed as additional data files
-                # df = pd.concat([df, *[d[basin] for d in self.additional_features]], axis=1)
-                # # if target variables are missing for basin, add empty column to still allow predictions to be made
-                # if not self.is_train:
-                #     df = self._add_missing_targets(df)
-                # Not currently supported:
-                # # check if any feature should be duplicated
-                # df = self._duplicate_features(df)
-                # # check if a shifted copy of a feature should be added
-                # df = self._add_lagged_features(df)
-                # # remove unnecessary columns
-                # try:
-                #     df = df[keep_cols]
-                # except KeyError:
-                #     not_available_columns = [x for x in keep_cols if x not in df.columns]
-                #     msg = [
-                #         f"The following features are not available in the data: {not_available_columns}. ",
-                #         f"These are the available features: {df.columns.tolist()}"
-                #     ]
-                #     raise KeyError("".join(msg))
+                # add columns from dataframes passed as additional data files
+                df_hcst = pd.concat([df_hcst, *[d[basin] for d in self.additional_features]], axis=1)
+                df_fcst = pd.concat([df_fcst, *[d[basin] for d in self.additional_features]], axis=1)
+                # if target variables are missing for basin, add empty column to still allow predictions to be made
+                if not self.is_train:
+                    # target variables held in hcst dataset
+                    df_hcst = self._add_missing_targets(df_hcst)
+
+                # check if any feature should be duplicated
+                df_hcst = self._duplicate_features(df_hcst)
+                df_fcst = self._duplicate_features(df_fcst)
+
+                # check if a shifted copy of a feature should be added
+                df_fcst = self._add_lagged_features(df_fcst)
+                df_hcst = self._add_lagged_features(df_hcst)
+
+                # TODO do this in a consistent way, so that hindcast/forecast data have the same missing portions
                 # # remove random portions of the timeseries of dynamic features
                 # for holdout_variable, holdout_dict in self.cfg.random_holdout_from_dynamic_features.items():
                 #     df[holdout_variable] = samplingutils.bernoulli_subseries_sampler(
@@ -215,22 +174,21 @@ class ForecastDataset(GenericDataset):
                 if not self.frequencies:
                     self.frequencies = [native_frequency]  # use df's native resolution by default
 
-                # # Assert that the used frequencies are lower or equal than the native frequency. There may be cases
-                # # where our logic cannot determine whether this is the case, because pandas might return an exotic
-                # # native frequency. In this case, all we can do is print a warning and let the user check themselves.
-                # try:
-                #     freq_vs_native = [utils.compare_frequencies(freq, native_frequency) for freq in self.frequencies]
-                # except ValueError:
-                #     LOGGER.warning('Cannot compare provided frequencies with native frequency. '
-                #                    'Make sure the frequencies are not higher than the native frequency.')
-                #     freq_vs_native = []
-                # if any(comparison > 1 for comparison in freq_vs_native):
-                #     raise ValueError(f'Frequency is higher than native data frequency {native_frequency}.')
+                # Assert that the used frequencies are lower or equal than the native frequency. There may be cases
+                # where our logic cannot determine whether this is the case, because pandas might return an exotic
+                # native frequency. In this case, all we can do is print a warning and let the user check themselves.
+                try:
+                    freq_vs_native = [utils.compare_frequencies(freq, native_frequency) for freq in self.frequencies]
+                except ValueError:
+                    LOGGER.warning('Cannot compare provided frequencies with native frequency. '
+                                   'Make sure the frequencies are not higher than the native frequency.')
+                    freq_vs_native = []
+                if any(comparison > 1 for comparison in freq_vs_native):
+                    raise ValueError(f'Frequency is higher than native data frequency {native_frequency}.')
 
                 # used to get the maximum warmup-offset across all frequencies. We don't use to_timedelta because it
                 # does not support all frequency strings. We can't calculate the maximum offset here, because to
                 # compare offsets, they need to be anchored to a specific date (here, the start date).
-
                 # NOTE in this dataset, `offsets` is the number of hindcast timesteps that need to be included in the warmup
                 offsets = [(self.seq_len[i] - max(self._predict_last_n[i], self._forecast_seq_len[i])) * to_offset(freq)
                            for i, freq in enumerate(self.frequencies)]
@@ -317,7 +275,7 @@ class ForecastDataset(GenericDataset):
                 xr_fcst = xarray.Dataset.from_dataframe(df_fcst.astype(np.float32))
                 xr_hcst = xarray.Dataset.from_dataframe(df_hcst.astype(np.float32))
 
-                # NOTE merging ensures that both forecast and hindcast data have the same temporal extent
+                # merging xarray datasets has the convenient side-effect that both forecast and hindcast data will have the same temporal extent
                 xr = xr_fcst.merge(xr_hcst) 
                 xr = xr.assign_coords({'basin': basin})
                 data_list.append(xr)
@@ -352,10 +310,11 @@ class ForecastDataset(GenericDataset):
         for freq, seq_len, forecast_seq_len, idx in zip(self.frequencies, self.seq_len, self._forecast_seq_len, indices):
             # if there's just one frequency, don't use suffixes.
             freq_suffix = '' if len(self.frequencies) == 1 else f'_{freq}'
-            # here, idx is the index of the forecast issue time
+            
+            # idx is the index of the forecast issue time
             hindcast_start_idx = idx + forecast_seq_len - seq_len
-            hindcast_end_idx = idx # slice-end is excluding
-            forecast_start_idx = idx
+            hindcast_end_idx = idx + self._forecast_offset # slice-end is excluding - we take values up, but not including, the issue time
+            forecast_start_idx = idx # forecast issue time
             global_end_idx = idx + forecast_seq_len 
             # TODO allow forecast overlap - currently not supported
             # hindcast_end_idx = idx + 1 - self.cfg.forecast_seq_length
@@ -456,7 +415,7 @@ class ForecastDataset(GenericDataset):
                 # during inference, we want all samples with sufficient history (even if input is NaN), so
                 # we pass x_d, x_s, y as None.
                 flag = validate_samples(x_h=[x_h[freq] for freq in self.frequencies] if self.is_train else None,
-                                        x_f=[x_f[freq] for freq in self.frequencies] if self.is_train and x_s else None,
+                                        x_f=[x_f[freq] for freq in self.frequencies] if self.is_train else None,
                                         y=[y[freq] for freq in self.frequencies] if self.is_train else None,
                                         frequency_maps=[frequency_maps[freq] for freq in self.frequencies],
                                         seq_length=self.seq_len,
@@ -475,7 +434,7 @@ class ForecastDataset(GenericDataset):
             for f in valid_samples:
                 # store pointer to basin and the sample's index in each frequency
                 lookup.append((basin, [frequency_maps[freq][int(f)] for freq in self.frequencies]))
-
+            
             # only store data if this basin has at least one valid sample in the given period
             if valid_samples.size > 0:
                 if not self.cfg.hindcast_inputs:
@@ -492,7 +451,7 @@ class ForecastDataset(GenericDataset):
                 f"These basins do not have a single valid sample in the {self.period} period: {basins_without_samples}")
         self.lookup_table = {i: elem for i, elem in enumerate(lookup)}
         self.num_samples = len(self.lookup_table)
-
+        self.valid_samples = valid_samples
         if self.num_samples == 0:
             if self.is_train:
                 raise NoTrainDataError
@@ -533,6 +492,9 @@ def validate_samples(x_h: List[np.ndarray],
     np.ndarray 
         Array has a value of 1 for valid samples and a value of 0 for invalid samples.
     """
+
+    # NOTE Why x_h, x_f, y set to None if not training?
+
     # number of samples is number of lowest-frequency samples (all maps have this length)
     n_samples = len(frequency_maps[0])
 
@@ -547,9 +509,13 @@ def validate_samples(x_h: List[np.ndarray],
             # find the last sample in this frequency that belongs to the lowest-frequency step j
             last_sample_of_freq = frequency_maps[i][j]
             # check whether there is sufficient data available to create a valid sequence (regardless of NaN etc, which are checked in the following sections)
-            if last_sample_of_freq < (hindcast_seq_length - 1):
+            if last_sample_of_freq < (hindcast_seq_length): # - 1):
                 flag[j] = 0  # too early for this frequency's seq_length (not enough history)
                 continue
+            
+            if (last_sample_of_freq + forecast_seq_length[i]) > n_samples:
+                flag[j] = 0
+                continue 
 
             # any NaN in the hindcast inputs makes the sample invalid
             if x_h is not None:
@@ -576,7 +542,7 @@ def validate_samples(x_h: List[np.ndarray],
     return flag
 
 
-def load_timeseries(data_dir: Path, basin: str, columns: list) -> pd.DataFrame:
+def load_timeseries(data_dir: Path, time_series_data_sub_dir: str, basin: str, columns: list) -> pd.DataFrame:
     """Load time series data from netCDF files into pandas DataFrame.
 
     Parameters
@@ -600,6 +566,10 @@ def load_timeseries(data_dir: Path, basin: str, columns: list) -> pd.DataFrame:
         If more than one netCDF file is found for the specified basin.
     """
     files_dir = data_dir / "time_series"
+    # Allow time series data from different members
+    if time_series_data_sub_dir is not None:
+        files_dir = files_dir / time_series_data_sub_dir
+
     netcdf_files = list(files_dir.glob("*.nc4"))
     netcdf_files.extend(files_dir.glob("*.nc"))
     netcdf_file = [f for f in netcdf_files if f.stem == basin]
