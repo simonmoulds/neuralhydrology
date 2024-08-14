@@ -312,10 +312,14 @@ class ForecastDataset(GenericDataset):
             freq_suffix = '' if len(self.frequencies) == 1 else f'_{freq}'
             
             # idx is the index of the forecast issue time
-            hindcast_start_idx = idx + forecast_seq_len - seq_len
+            # hence, idx + self._forecast_offset is the index of the first forecast
+            hindcast_start_idx = idx + self._forecast_offset + forecast_seq_len - seq_len
             hindcast_end_idx = idx + self._forecast_offset # slice-end is excluding - we take values up, but not including, the issue time
-            forecast_start_idx = idx # forecast issue time
-            global_end_idx = idx + forecast_seq_len 
+            # FIXME: should this be idx+self._forecast_offset? 
+            # Don't think so, because x_f is indexed by the initialization time and not the forecast start time
+            forecast_start_idx = idx
+            global_end_idx = idx + self._forecast_offset + forecast_seq_len 
+
             # TODO allow forecast overlap - currently not supported
             # hindcast_end_idx = idx + 1 - self.cfg.forecast_seq_length
             # forecast_start_idx = idx + 1 - self.cfg.forecast_seq_length
@@ -353,9 +357,13 @@ class ForecastDataset(GenericDataset):
             LOGGER.info("Create lookup table and convert to pytorch tensor")
 
         # Split data into forecast and hindcast components
+        # self.xr = xr # DEBUGGING
         xr_fcst = xr[self.cfg.forecast_inputs]
         xr_hcst = xr[[var for var in xr.variables if var not in self.cfg.forecast_inputs]]
         xr_hcst = xr_hcst.drop_dims('lead_time')
+
+        # # DEBUGGING 
+        # self.frequency_maps = {} 
 
         # list to collect basins ids of basins without a single training sample
         basins_without_samples = []
@@ -400,6 +408,8 @@ class ForecastDataset(GenericDataset):
                                      f'(including warmup) has a length that is divisible by {frequency_factor}.')
                 frequency_maps[freq] = np.arange(len(df_hcst_resampled) // frequency_factor) \
                                        * frequency_factor + (frequency_factor - 1)
+            # # DEBUGGING 
+            # self.frequency_maps[basin] = frequency_maps 
 
             # store first date of sequence to be able to restore dates during inference
             if not self.is_train:
@@ -431,10 +441,12 @@ class ForecastDataset(GenericDataset):
             #     x_d_column_names += self.cfg.autoregressive_inputs
 
             valid_samples = np.argwhere(flag == 1)
+            self.valid_samples = valid_samples
             for f in valid_samples:
                 # store pointer to basin and the sample's index in each frequency
                 lookup.append((basin, [frequency_maps[freq][int(f)] for freq in self.frequencies]))
-            
+
+            self.lookup = lookup 
             # only store data if this basin has at least one valid sample in the given period
             if valid_samples.size > 0:
                 if not self.cfg.hindcast_inputs:
@@ -493,6 +505,9 @@ def validate_samples(x_h: List[np.ndarray],
         Array has a value of 1 for valid samples and a value of 0 for invalid samples.
     """
 
+    # FIXME supply as argument 
+    forecast_offset = 1 
+
     # NOTE Why x_h, x_f, y set to None if not training?
 
     # number of samples is number of lowest-frequency samples (all maps have this length)
@@ -512,8 +527,9 @@ def validate_samples(x_h: List[np.ndarray],
             if last_sample_of_freq < (hindcast_seq_length): # - 1):
                 flag[j] = 0  # too early for this frequency's seq_length (not enough history)
                 continue
-            
-            if (last_sample_of_freq + forecast_seq_length[i]) > n_samples:
+
+            # add forecast_offset here, because it determines how many timesteps ahead we're going to be predicting (remember forecast_offset is the number of timesteps between initialization and the first forecast)
+            if (last_sample_of_freq + forecast_offset + forecast_seq_length[i]) > n_samples:
                 flag[j] = 0
                 continue 
 
