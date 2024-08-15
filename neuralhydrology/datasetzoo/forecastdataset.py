@@ -311,12 +311,13 @@ class ForecastDataset(GenericDataset):
             # if there's just one frequency, don't use suffixes.
             freq_suffix = '' if len(self.frequencies) == 1 else f'_{freq}'
             
-            # idx is the index of the forecast issue time
+            # NOTE idx is the index of the forecast issue time
             # hence, idx + self._forecast_offset is the index of the first forecast
             hindcast_start_idx = idx + self._forecast_offset + forecast_seq_len - seq_len
             hindcast_end_idx = idx + self._forecast_offset # slice-end is excluding - we take values up, but not including, the issue time
-            # FIXME: should this be idx+self._forecast_offset? 
-            # Don't think so, because x_f is indexed by the initialization time and not the forecast start time
+            # `forecast_start_idx` equals `idx` because in the case of forecasts, the 
+            # time dimension refers to the initialization time and NOT the time of the 
+            # forecast itself, which instead is indexed by lead time. 
             forecast_start_idx = idx
             global_end_idx = idx + self._forecast_offset + forecast_seq_len 
 
@@ -357,13 +358,9 @@ class ForecastDataset(GenericDataset):
             LOGGER.info("Create lookup table and convert to pytorch tensor")
 
         # Split data into forecast and hindcast components
-        # self.xr = xr # DEBUGGING
         xr_fcst = xr[self.cfg.forecast_inputs]
         xr_hcst = xr[[var for var in xr.variables if var not in self.cfg.forecast_inputs]]
         xr_hcst = xr_hcst.drop_dims('lead_time')
-
-        # # DEBUGGING 
-        # self.frequency_maps = {} 
 
         # list to collect basins ids of basins without a single training sample
         basins_without_samples = []
@@ -408,8 +405,7 @@ class ForecastDataset(GenericDataset):
                                      f'(including warmup) has a length that is divisible by {frequency_factor}.')
                 frequency_maps[freq] = np.arange(len(df_hcst_resampled) // frequency_factor) \
                                        * frequency_factor + (frequency_factor - 1)
-            # # DEBUGGING 
-            # self.frequency_maps[basin] = frequency_maps 
+
 
             # store first date of sequence to be able to restore dates during inference
             if not self.is_train:
@@ -427,10 +423,11 @@ class ForecastDataset(GenericDataset):
                 flag = validate_samples(x_h=[x_h[freq] for freq in self.frequencies] if self.is_train else None,
                                         x_f=[x_f[freq] for freq in self.frequencies] if self.is_train else None,
                                         y=[y[freq] for freq in self.frequencies] if self.is_train else None,
-                                        frequency_maps=[frequency_maps[freq] for freq in self.frequencies],
                                         seq_length=self.seq_len,
                                         forecast_seq_length=self._forecast_seq_len,
-                                        predict_last_n=self._predict_last_n)
+                                        forecast_offset=self._forecast_offset,
+                                        predict_last_n=self._predict_last_n,
+                                        frequency_maps=[frequency_maps[freq] for freq in self.frequencies])
 
             # # Concatenate autoregressive columns to dynamic inputs *after* validation, so as to not remove
             # # samples with missing autoregressive inputs.
@@ -477,6 +474,7 @@ def validate_samples(x_h: List[np.ndarray],
                      y: List[np.ndarray], 
                      seq_length: List[int],
                      forecast_seq_length: List[int],
+                     forecast_offset: int, #List[int],
                      predict_last_n: List[int], 
                      frequency_maps: List[np.ndarray]) -> np.ndarray:
     """Checks for invalid samples due to NaN or insufficient sequence length.
@@ -504,11 +502,6 @@ def validate_samples(x_h: List[np.ndarray],
     np.ndarray 
         Array has a value of 1 for valid samples and a value of 0 for invalid samples.
     """
-
-    # FIXME supply as argument 
-    forecast_offset = 1 
-
-    # NOTE Why x_h, x_f, y set to None if not training?
 
     # number of samples is number of lowest-frequency samples (all maps have this length)
     n_samples = len(frequency_maps[0])
