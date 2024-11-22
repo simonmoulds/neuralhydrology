@@ -63,6 +63,8 @@ def get_loss_obj(cfg: Config) -> loss.BaseLoss:
         loss_obj = loss.MaskedNSELoss(cfg)
     elif cfg.loss.lower() == "rmse":
         loss_obj = loss.MaskedRMSELoss(cfg)
+    elif cfg.loss.lower() == "weightedrmse":
+        loss_obj = loss.MaskedWeightedRMSELoss(cfg)
     elif cfg.loss.lower() == "gmmloss":
         loss_obj = loss.MaskedGMMLoss(cfg)
     elif cfg.loss.lower() == "cmalloss":

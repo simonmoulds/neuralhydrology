@@ -261,6 +261,41 @@ class MaskedNSELoss(BaseLoss):
         # here we need to subset the per_basin_target_stds. We slice to keep the shape of [bs, seq, 1]
         return {key: value[:, :, n_target:n_target + 1] for key, value in additional_data.items()}
 
+class MaskedWeightedRMSELoss(BaseLoss):
+    """Weighted root mean squared error. 
+    
+    Weighted root mean squared error between measured and observed discharges. However it uses both the discharge and
+    the logarithm of the discharge. The second part aims at improving low flows representation. 
+    Implementation based on [#]_. 
+    
+    Parameters
+    ----------
+    cfg : Config
+        The run configuration.
+
+    References
+    ----------
+    .. [#] Feng, D., Liu, J., Lawson, K., & Shen, C. (2022). Differentiable, learnable, regionalized process-based 
+        models with multiphysical outputs can approach state-of-the-art hydrologic prediction accuracy. Water Resources 
+        Research, 58, e2022WR032404. https://doi.org/10.1029/2022WR032404
+    
+    """
+
+    def __init__(self, cfg: Config):
+        super(MaskedWeightedRMSELoss, self).__init__(cfg, prediction_keys=['y_hat'], ground_truth_keys=['y'])
+
+    def _get_loss(self, prediction: Dict[str, torch.Tensor], ground_truth: Dict[str, torch.Tensor], **kwargs):
+        mask = ~torch.isnan(ground_truth['y'])
+        y_sim_masked = prediction['y_hat'][mask]
+        y_obs_masked = ground_truth['y'][mask]
+        y_sim_transformed = torch.log10(torch.sqrt(y_sim_masked + 1e-6) + 0.1)
+        y_obs_transformed = torch.log10(torch.sqrt(y_obs_masked + 1e-6) + 0.1)
+
+        loss = 0.75 * torch.sqrt(torch.mean((y_sim_masked - y_obs_masked)**2)) +\
+            0.25*torch.sqrt(torch.mean((y_sim_transformed - y_obs_transformed)**2))
+        
+        return loss
+
 
 class MaskedGMMLoss(BaseLoss):
     """Average negative log-likelihood for a gaussian mixture model (GMM). 
