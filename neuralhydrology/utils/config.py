@@ -304,6 +304,18 @@ class Config(object):
         return self._as_default_list(self._cfg.get("clip_targets_to_zero", []))
 
     @property
+    def conceptual_model(self) -> str:
+        return self._cfg.get("conceptual_model", None)
+    
+    @property
+    def conceptual_model_dynamic_parameterization(self) -> List[str]:
+        return self._as_default_list(self._cfg.get("conceptual_model_dynamic_parameterization", {}))
+    
+    @property
+    def conceptual_routing(self) -> bool:
+        return self._cfg.get("conceptual_routing", False)
+    
+    @property
     def continue_from_epoch(self) -> int:
         return self._cfg.get("continue_from_epoch", None)
 
@@ -564,8 +576,8 @@ class Config(object):
         return self._get_value_verbose("model")
 
     @property
-    def conceptual_model(self) -> str:
-        return self._cfg.get("conceptual_model", "SHM")
+    def n_conceptual_models(self) -> int:
+        return self._cfg.get("n_conceptual_models", 1)
 
     @property
     def n_distributions(self) -> int:
